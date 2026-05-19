@@ -1,0 +1,4 @@
+# Never commit real credentials.
+.streamlit/secrets.toml
+
+.idea
