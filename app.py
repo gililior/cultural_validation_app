@@ -13,7 +13,7 @@ assignments, annotations) accessed through gspread.
 """
 from __future__ import annotations
 
-import html
+import re
 from datetime import datetime, timezone
 
 import gspread
@@ -106,6 +106,36 @@ or whether the answer is universal across cultures.
   → Culturally specific (Named-entity).
 - "What does the term 'inflation' mean in economics?" → Universal.
 """
+
+# --------------------------------------------------------------------------
+# LaTeX-aware text rendering
+# --------------------------------------------------------------------------
+# ~7% of the MMLU-Pro pool carries math markup in the question/option text.
+# Streamlit's markdown renderer typesets $...$ / $$...$$ spans with KaTeX,
+# but only for text it processes as markdown -- never inside raw HTML divs.
+# So we render question/option text as plain markdown and pre-process it:
+#   * \(..\) and \[..\] LaTeX delimiters are normalized to $..$ / $$..$$;
+#   * math spans are passed through untouched for KaTeX;
+#   * everything else has markdown special characters escaped so MCQ text
+#     (asterisks, underscores, brackets, backticks) is shown verbatim.
+# Note: a lone unmatched "$" (e.g. a currency amount) is shown literally;
+# two stray "$" on one line would be mistaken for a math span -- an inherent
+# ambiguity of TeX dollar delimiters that the source data rarely triggers.
+_MATH_SPAN = re.compile(r"(\$\$.+?\$\$|\$[^$\n]+?\$)", re.DOTALL)
+_MD_SPECIALS = re.compile(r"([\\`*_{}\[\]()#+\-.!|~<>])")
+
+
+def latex_markdown(text: str) -> str:
+    """Prepare arbitrary MCQ text for st.markdown so KaTeX renders any math."""
+    text = str(text)
+    text = text.replace(r"\[", "$$").replace(r"\]", "$$")
+    text = text.replace(r"\(", "$").replace(r"\)", "$")
+    parts = _MATH_SPAN.split(text)
+    # split() with one capture group yields: text, math, text, math, ...
+    return "".join(
+        part if i % 2 else _MD_SPECIALS.sub(r"\\\1", part)
+        for i, part in enumerate(parts)
+    )
 
 st.set_page_config(
     page_title="Cultural Annotation",
@@ -345,18 +375,13 @@ def render_question(item: pd.Series, item_id: str) -> None:
     The toggle is keyed on item_id, so it resets to collapsed for every
     new item.
 
-    Question/option text is HTML-escaped and rendered in styled <div>s so
-    that special characters in the MCQ text are shown verbatim and the
-    correct answer is highlighted in green without relying on bracket-
-    fragile markdown.
+    Question/option text is rendered as markdown via latex_markdown(), which
+    escapes markdown special characters in plain text (so MCQ text is shown
+    verbatim) while leaving $...$ / $$...$$ spans for Streamlit's KaTeX math
+    renderer. The correct answer is flagged with a green :green[] marker.
     """
     st.markdown(f"**Subject:** {item['subject_category']}")
-    st.markdown(
-        f"<div style='font-family:Georgia,serif;font-size:1.35rem;"
-        f"line-height:1.5;margin:0.5rem 0 1rem 0;'>"
-        f"{html.escape(str(item['question_text']))}</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(latex_markdown(item["question_text"]))
     show_options = st.toggle("Show options (A–J)", key=f"options_{item_id}")
     if not show_options:
         return
@@ -366,18 +391,13 @@ def render_question(item: pd.Series, item_id: str) -> None:
         text = str(item.get(f"option_{letter.lower()}", ""))
         if text == "":
             continue
-        safe = html.escape(text)
+        body = latex_markdown(text)
         if letter == correct:
             st.markdown(
-                f"<div style='color:#1a7f37;font-weight:700;margin:2px 0;'>"
-                f"{letter}. {safe} &nbsp;&#10003; (correct answer)</div>",
-                unsafe_allow_html=True,
+                f"**{letter}.** {body} &nbsp; :green[**✓ (correct answer)**]"
             )
         else:
-            st.markdown(
-                f"<div style='margin:2px 0;'><b>{letter}.</b> {safe}</div>",
-                unsafe_allow_html=True,
-            )
+            st.markdown(f"**{letter}.** {body}")
 
 
 def render_annotation() -> None:
